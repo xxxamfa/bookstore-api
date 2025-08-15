@@ -1,156 +1,149 @@
 'use strict';
 
-// ###################################################### //
-// ##### Server Setup for Book Store Management API ##### //
-// ###################################################### //
+/**
+ * Book Store Management API (Express + Mongoose)
+ * - Uses environment variables for secrets (PORT, MONGO_URI)
+ * - Validates and sanitizes request bodies with Joi (see validators.js)
+ * - Validates MongoDB ObjectId for :id routes
+ * - Provides consistent HTTP status codes and JSON responses
+ */
 
-// Importing packages
+require('dotenv').config();                // Load .env variables first
+
+// ------------------------------
+// Imports
+// ------------------------------
 const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
+const { bookSchema, validate, validateId } = require('./validators'); // body & id validators
 
-// Initialize Express app
+// ------------------------------
+// App & Middleware
+// ------------------------------
 const app = express();
-// Define the port for the server to listen on
-const port = process.env.PORT || 3000; // You can change this port
-
-// Middleware setup
-// Enable CORS (Cross-Origin Resource Sharing) for all routes
+const port = process.env.PORT || 3000;
+// Enable CORS for all origins (adjust if you need restrictions)
 app.use(cors());
-// Enable Express to parse JSON formatted request bodies
+// Parse JSON request bodies
 app.use(express.json());
 
-// ###################################################### //
-// #####           Connection to MongoDB            ##### //
-// ###################################################### //
-
-// Importing the Mongoose package for MongoDB interaction
-// Mongoose is an ODM (Object Data Modeling) library for MongoDB and Node.js.
-
-// MongoDB connection string.
-// This string is generated from the inputs provided in the UI.
-mongoose.connect('mongodb+srv://xxxamfa:Bl1691821@book.oaosyob.mongodb.net/?retryWrites=true&w=majority&appName=Book', {
-    useNewUrlParser: true, // Use the new URL parser instead of the deprecated one
-    useUnifiedTopology: true // Use the new server discovery and monitoring engine
-})
-    .then(() => {
+// ------------------------------
+// MongoDB (Mongoose) Connection
+// ------------------------------
+// Connect using MONGO_URI from .env to avoid hardcoding secrets in code
+(async function connectAndStart() {
+    try {
+        await mongoose.connect(process.env.MONGO_URI);
         console.log('Connected to MongoDB');
-        // Start the Express server only after successfully connecting to MongoDB
-        app.listen(port, () => {
-            console.log('Book Store API Server is running on port ' + port);
-        });
-    })
-    .catch((error) => {
-        // Log any errors that occur during the MongoDB connection
-        console.error('Error connecting to MongoDB:', error);
-    });
 
-// ############################################### //
-// #####        Book Store Model Setup       ##### //
-// ############################################### //
+        app.listen(port, () =>
+            console.log(`Book Store API Server is running on port ${port}`)
+        );
+    } catch (err) {
+        console.error('Error connecting to MongoDB:', err);
+        process.exit(1); // Exit if DB connection fails
+    }
+})();
 
-// Define Mongoose Schema Class
-const Schema = mongoose.Schema;
+// ------------------------------
+// Mongoose Model
+// ------------------------------
+const bookstoreSchema = new mongoose.Schema(
+    {
+        Title: { type: String, required: true, trim: true },
+        Author: { type: String, required: true, trim: true },
+        Pages: { type: Number, required: true, min: 1 },
+    },
+    { timestamps: true } // createdAt / updatedAt for free
+);
 
-// This schema defines the structure of book store documents in the MongoDB collection.
-const bookstoreSchema = new Schema({
-    Title: { type: String, required: true },
-    Author: { type: String, required: true },
-    Pages: { type: Number, required: true }
-});
+const BookStore = mongoose.model('BookStore', bookstoreSchema);
 
-// Create a Mongoose model from the book storeSchema.
-// This model provides an interface to interact with the 'bookstores' collection.
-// Mongoose automatically pluralizes "BookStore" to "bookstores" for the collection name.
-const BookStore = mongoose.model("BookStore", bookstoreSchema);
-
-// ############################################# //
-// #####     Book Store API Routes Setup   ##### //
-// ############################################# //
-
-// Create an Express Router instance to handle book store-related routes.
+// ------------------------------
+// Router (/api/bookstores)
+// ------------------------------
 const router = express.Router();
-
-// Mount the router middleware at the '/api/bookstores' path.
-// All routes defined on this router will be prefixed with '/api/bookstores'.
 app.use('/api/bookstores', router);
 
-// READ: Get All Books
-// Route to get all book stores from the database.
-// Handles GET requests to '/api/bookstores/'.
-router.route("/")
-    .get((req, res) => {
-        console.log("Fetching all book stores..."); // Log the request for debugging purposes.
-        // Find all book store documents in the 'bookstores' collection.
-        BookStore.find()
-            .then((bookstores) => res.json(bookstores)) // If successful, return book stores as JSON.
-            .catch((err) => res.status(400).json("Error: " + err)); // If error, return 400 status with error message.
-    });
+/**
+ * READ: Get all books
+ * GET /api/bookstores
+ */
+router.get('/', async (req, res) => {
+    try {
+        const books = await BookStore.find().lean();
+        return res.json(books);
+    } catch (err) {
+        return res.status(500).json({ message: 'ServerError', error: String(err) });
+    }
+});
 
-// READ: Get Book by ID
-// Route to get a specific book store by its ID.
-// Handles GET requests to '/api/bookstores/:id'.
-router.route("/:id")
-    .get((req, res) => {
-        // Find a book store document by its ID from the request parameters.
-        BookStore.findById(req.params.id)
-            .then((bookstore) => res.json(bookstore)) // If successful, return the book store as JSON.
-            .catch((err) => res.status(400).json("Error: " + err)); // If error, return 400 status with error message.
-    });
+/**
+ * READ: Get one book by id
+ * GET /api/bookstores/:id
+ */
+router.get('/:id', validateId, async (req, res) => {
+    try {
+        const doc = await BookStore.findById(req.params.id).lean();
+        if (!doc) return res.status(404).json({ message: 'NotFound' });
+        return res.json(doc);
+    } catch (err) {
+        return res.status(500).json({ message: 'ServerError', error: String(err) });
+    }
+});
 
-// CREATE: Add New Book
-// Route to add a new book store to the database.
-// Handles POST requests to '/api/bookstores/add'.
-router.route("/add")
-    .post((req, res) => {
-        // Extract attributes from the request body.
-        const Title = req.body.Title;
-        const Author = req.body.Author;
-        const Pages = req.body.Pages;
+/**
+ * CREATE: Add a new book
+ * POST /api/bookstores/add
+ * Body validated & sanitized by Joi (validators.js)
+ */
+router.post('/add', validate(bookSchema), async (req, res) => {
+    try {
+        const created = await BookStore.create(req.body); // req.body is already cleaned
+        return res.status(201).json(created);
+    } catch (err) {
+        return res.status(500).json({ message: 'ServerError', error: String(err) });
+    }
+});
 
-        // Create a new Book Store object using the extracted data.
-        const newBookStore = new BookStore({
-            Title,
-            Author,
-            Pages
-        });
+/**
+ * UPDATE: Modify a book by id
+ * PUT /api/bookstores/update/:id
+ * Both :id and body are validated before hitting DB
+ */
+router.put('/update/:id', validateId, validate(bookSchema), async (req, res) => {
+    try {
+        const updated = await BookStore.findByIdAndUpdate(
+            req.params.id,
+            req.body,
+            { new: true, runValidators: true } // return updated doc
+        );
+        if (!updated) return res.status(404).json({ message: 'NotFound' });
+        return res.json(updated);
+    } catch (err) {
+        return res.status(500).json({ message: 'ServerError', error: String(err) });
+    }
+});
 
-        // Save the new book store document to the database.
-        newBookStore
-            .save()
-            .then(() => res.json("Book Store added!")) // If successful, return success message.
-            .catch((err) => res.status(400).json("Error: " + err)); // If error, return 400 status with error message.
-    });
+/**
+ * DELETE: Remove a book by id
+ * DELETE /api/bookstores/delete/:id
+ */
+router.delete('/delete/:id', validateId, async (req, res) => {
+    try {
+        const deleted = await BookStore.findByIdAndDelete(req.params.id);
+        if (!deleted) return res.status(404).json({ message: 'NotFound' });
+        return res.json({ message: 'Book Store deleted.' });
+    } catch (err) {
+        return res.status(500).json({ message: 'ServerError', error: String(err) });
+    }
+});
 
-// UPDATE: Modify Book by ID
-// Route to update an existing book store by its ID.
-// Handles PUT requests to '/api/bookstores/update/:id'.
-router.route("/update/:id")
-    .put((req, res) => {
-        // Find the book store by ID.
-        BookStore.findById(req.params.id)
-            .then((bookstore) => {
-                // Update the book store's attributes with data from the request body.
-                bookstore.Title = req.body.Title;
-                bookstore.Author = req.body.Author;
-                bookstore.Pages = req.body.Pages;
+// ------------------------------
+// Health check & 404 fallback
+// ------------------------------
+app.get('/health', (req, res) => res.json({ ok: true }));
 
-                // Save the updated book store document.
-                bookstore
-                    .save()
-                    .then(() => res.json("Book Store updated!")) // If successful, return success message.
-                    .catch((err) => res.status(400).json("Error: " + err)); // If error, return 400 status with error message.
-            })
-            .catch((err) => res.status(400).json("Error: " + err)); // If book store not found or other error, return 400.
-    });
-
-// DELETE: Remove Book by ID
-// Route to delete a book store by its ID.
-// Handles DELETE requests to '/api/bookstores/delete/:id'.
-router.route("/delete/:id")
-    .delete((req, res) => {
-        // Find and delete the book store document by ID.
-        BookStore.findByIdAndDelete(req.params.id)
-            .then(() => res.json("Book Store deleted.")) // If successful, return success message.
-            .catch((err) => res.status(400).json("Error: " + err)); // If error, return 400 status with error message.
-    });
+// Catch-all for undefined routes
+app.use((req, res) => res.status(404).json({ message: 'NotFound' }));
